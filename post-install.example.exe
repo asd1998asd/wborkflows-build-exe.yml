@@ -1,0 +1,1061 @@
+import os
+import sys
+import time
+import subprocess
+import threading
+import datetime
+import webbrowser
+from tkinter import filedialog, messagebox
+import customtkinter as ctk
+import serial.tools.list_ports
+
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("blue")
+
+
+BRAND_PROFILES = {
+    "سامسونج (Samsung Galaxy)": {
+        "demo_model": "SAMSUNG SM-G998B (Galaxy S21 Ultra)",
+        "demo_os": "Android 14 (One UI 6.1)",
+        "demo_spec": "88%  |  Exynos 2100 (arm64-v8a)",
+        "demo_mode": "ADB / Download Ready",
+        "demo_serial": "R5CR80SAM99",
+        "notes": "يدعم أوضاع ADB، Recovery، وDownload Mode عبر أوامر النظام المتوافقة.",
+        "actions": [
+            ("⬇️ دخول وضع Download Mode", "adb", ["reboot", "download"]),
+            ("🛠️ دخول وضع Recovery", "adb", ["reboot", "recovery"]),
+            ("📋 قراءة معلومات الجهاز", "info", []),
+        ],
+    },
+    "أبل / آيفون (Apple iPhone / iPadOS)": {
+        "demo_model": "Apple iPhone 15 Pro (A3102)",
+        "demo_os": "iOS 18.x (Darwin / arm64e)",
+        "demo_spec": "94%  |  A17 Pro Bionic",
+        "demo_mode": "USB Diagnostics / Info",
+        "demo_serial": "F2L99APL15P",
+        "notes": "فحص الاتصال والتشخيص الأساسي عبر USB (الأوامر القياسية لـ ADB/Fastboot خاصة بأندرويد).",
+        "actions": [
+            ("🔍 فحص حالة الاتصال والمنافذ", "refresh", []),
+            ("📋 عرض بطاقة معلومات الجهاز", "info", []),
+        ],
+    },
+    "تابلت وأجهزة لوحية (Tablets & Pads)": {
+        "demo_model": "Lenovo Tab P12 / Galaxy Tab S9",
+        "demo_os": "Android 14 (Tablet UI)",
+        "demo_spec": "79%  |  arm64-v8a",
+        "demo_mode": "ADB Mode",
+        "demo_serial": "TB2026PAD88",
+        "notes": "مناسب لفحص الأجهزة اللوحية، تثبيت التطبيقات، وإدارة أوضاع التشغيل.",
+        "actions": [
+            ("⚙️ دخول وضع Bootloader", "adb", ["reboot", "bootloader"]),
+            ("🛠️ دخول وضع Recovery", "adb", ["reboot", "recovery"]),
+            ("📋 قراءة معلومات التابلت", "info", []),
+        ],
+    },
+    "إنفينيكس وتكنو وآيتل (Infinix / Tecno / Itel)": {
+        "demo_model": "Infinix NOTE 40 Pro (X6851)",
+        "demo_os": "Android 14 (XOS 14)",
+        "demo_spec": "83%  |  MediaTek Helio (arm64-v8a)",
+        "demo_mode": "ADB Mode",
+        "demo_serial": "078412INF40",
+        "notes": "قسم مخصص لأجهزة Infinix وTecno وItel لفحص الاتصال، السجلات، وأوضاع الإقلاع.",
+        "actions": [
+            ("⚙️ دخول وضع Bootloader / Fastboot", "adb", ["reboot", "bootloader"]),
+            ("🛠️ دخول وضع Recovery", "adb", ["reboot", "recovery"]),
+            ("📋 قراءة معلومات الجهاز", "info", []),
+        ],
+    },
+    "شاومي وبوكو وريدمي (Xiaomi / POCO / Redmi)": {
+        "demo_model": "Redmi Note 13 Pro (2312DRA50G)",
+        "demo_os": "Android 14 (HyperOS)",
+        "demo_spec": "91%  |  arm64-v8a",
+        "demo_mode": "ADB / Fastboot Ready",
+        "demo_serial": "XM9012RED13",
+        "notes": "إدارة أوضاع ADB وFastboot وقراءة خصائص النظام والتشخيص.",
+        "actions": [
+            ("⚙️ دخول وضع Fastboot", "adb", ["reboot", "bootloader"]),
+            ("🚀 إعادة تشغيل من Fastboot", "fastboot", ["reboot"]),
+            ("📋 قراءة معلومات الجهاز", "info", []),
+        ],
+    },
+    "هواوي وهونر (Huawei / Honor)": {
+        "demo_model": "HONOR Magic6 Lite (ANY-NX1)",
+        "demo_os": "Android 14 / MagicOS",
+        "demo_spec": "85%  |  arm64-v8a",
+        "demo_mode": "ADB Mode",
+        "demo_serial": "HNR8826MG6",
+        "notes": "فحص الاتصال، قراءة معلومات النظام، وسحب سجلات التشخيص لأجهزة هواوي وهونر.",
+        "actions": [
+            ("🛠️ دخول وضع Recovery", "adb", ["reboot", "recovery"]),
+            ("📋 قراءة معلومات الجهاز", "info", []),
+        ],
+    },
+    "أوبو وريلمي وفيفو (OPPO / Realme / Vivo)": {
+        "demo_model": "Realme GT 6T (RMX3851)",
+        "demo_os": "Android 14 (ColorOS / Realme UI)",
+        "demo_spec": "76%  |  arm64-v8a",
+        "demo_mode": "ADB Mode",
+        "demo_serial": "RLM5541GT6",
+        "notes": "إدارة التطبيقات، أوضاع التشغيل، وتشخيص النظام لأجهزة OPPO وRealme وVivo.",
+        "actions": [
+            ("⚙️ دخول وضع Bootloader", "adb", ["reboot", "bootloader"]),
+            ("🛠️ دخول وضع Recovery", "adb", ["reboot", "recovery"]),
+            ("📋 قراءة معلومات الجهاز", "info", []),
+        ],
+    },
+    "سائر شركات الهواتف (Other Brands)": {
+        "demo_model": "Motorola Edge 50 / OnePlus 12R",
+        "demo_os": "Android 14 (AOSP / OEM)",
+        "demo_spec": "89%  |  arm64-v8a",
+        "demo_mode": "ADB Mode",
+        "demo_serial": "OTH7731GEN",
+        "notes": "دعم عام للأجهزة المتوافقة مع معايير ADB وFastboot القياسية.",
+        "actions": [
+            ("⚙️ دخول وضع Bootloader", "adb", ["reboot", "bootloader"]),
+            ("🚀 إعادة تشغيل من Fastboot", "fastboot", ["reboot"]),
+            ("📋 قراءة معلومات الجهاز", "info", []),
+        ],
+    },
+}
+
+
+class ProDroidServiceTool(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+
+        self.title("ProDroid Service Tool v1.3 - Windows Edition")
+        self.geometry("1200x770")
+        self.minsize(1020, 660)
+
+        self.base_dir = (
+            os.path.dirname(sys.executable)
+            if getattr(sys, "frozen", False)
+            else os.path.dirname(os.path.abspath(__file__))
+        )
+        self.adb_path = self._resolve_tool("adb.exe")
+        self.fastboot_path = self._resolve_tool("fastboot.exe")
+
+        self.demo_mode = False
+        self.selected_img_path = ""
+        self.current_brand = list(BRAND_PROFILES.keys())[0]
+
+        self._build_ui()
+        self._build_context_menus()
+        self.log("تم تشغيل ProDroid Service Tool v1.3. فعّل (وضع التجربة) أو وصّل جهازاً عبر USB.", "INFO")
+        self.refresh_connections()
+
+    def _resolve_tool(self, exe_name):
+        for candidate in [
+            os.path.join(self.base_dir, exe_name),
+            os.path.join(self.base_dir, "platform-tools", exe_name),
+        ]:
+            if os.path.exists(candidate):
+                return candidate
+        return exe_name.replace(".exe", "")
+
+    def _build_ui(self):
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        header = ctk.CTkFrame(self, height=64, corner_radius=0, fg_color="#111827")
+        header.grid(row=0, column=0, columnspan=2, sticky="ew")
+        header.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            header,
+            text="⚡ ProDroid Service Tool v1.3",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color="#38bdf8",
+        ).grid(row=0, column=0, padx=20, pady=16, sticky="w")
+
+        self.status_badge = ctk.CTkLabel(
+            header,
+            text="● في انتظار الجهاز",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#fbbf24",
+            fg_color="#1f2937",
+            corner_radius=8,
+            padx=14,
+            pady=6,
+        )
+        self.status_badge.grid(row=0, column=1, padx=10, sticky="e")
+
+        self.demo_btn = ctk.CTkButton(
+            header,
+            text="🧪 وضع التجربة: متوقف",
+            width=165,
+            height=36,
+            fg_color="#374151",
+            hover_color="#4b5563",
+            command=self.toggle_demo_mode,
+        )
+        self.demo_btn.grid(row=0, column=2, padx=(0, 8), pady=14)
+
+        ctk.CTkButton(
+            header,
+            text="📄 تصدير تقرير",
+            width=125,
+            height=36,
+            fg_color="#0d9488",
+            hover_color="#0f766e",
+            command=self.export_report,
+        ).grid(row=0, column=3, padx=(0, 8), pady=14)
+
+        ctk.CTkButton(
+            header,
+            text="🔄 فحص الاتصال",
+            width=125,
+            height=36,
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            command=self.refresh_connections,
+        ).grid(row=0, column=4, padx=(0, 20), pady=14)
+
+        sidebar = ctk.CTkFrame(self, width=255, corner_radius=12, fg_color="#161f30")
+        sidebar.grid(row=1, column=0, padx=(15, 8), pady=15, sticky="ns")
+        sidebar.grid_propagate(False)
+
+        ctk.CTkLabel(
+            sidebar,
+            text="أوضاع التشغيل (Reboot)",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color="#94a3b8",
+        ).pack(pady=(18, 10), padx=16, anchor="w")
+
+        reboot_items = [
+            ("📱 إعادة تشغيل للنظام", "adb", ["reboot"], "إعادة التشغيل للنظام"),
+            ("🛠️ وضع Recovery", "adb", ["reboot", "recovery"], "الدخول إلى Recovery"),
+            ("⚙️ وضع Bootloader", "adb", ["reboot", "bootloader"], "الدخول إلى Bootloader"),
+            ("⬇️ وضع Download Mode", "adb", ["reboot", "download"], "الدخول إلى Download Mode"),
+            ("🚀 خروج من Fastboot", "fastboot", ["reboot"], "إعادة التشغيل من Fastboot"),
+        ]
+
+        for text, proto, args, label in reboot_items:
+            ctk.CTkButton(
+                sidebar,
+                text=text,
+                height=38,
+                anchor="w",
+                fg_color="#212d42",
+                hover_color="#334155",
+                command=lambda p=proto, a=args, l=label: self.run_action(p, a, l),
+            ).pack(fill="x", padx=14, pady=5)
+
+        ctk.CTkLabel(
+            sidebar,
+            text="تقدم العملية الحالية",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#94a3b8",
+        ).pack(pady=(26, 8), padx=16, anchor="w")
+
+        self.progress_bar = ctk.CTkProgressBar(sidebar, height=12)
+        self.progress_bar.pack(fill="x", padx=16)
+        self.progress_bar.set(0)
+
+        self.progress_lbl = ctk.CTkLabel(
+            sidebar,
+            text="جاهز (0%)",
+            font=ctk.CTkFont(size=12),
+            text_color="#cbd5e1",
+        )
+        self.progress_lbl.pack(pady=(6, 0), padx=16, anchor="w")
+
+        main_area = ctk.CTkFrame(self, fg_color="transparent")
+        main_area.grid(row=1, column=1, padx=(8, 15), pady=15, sticky="nsew")
+        main_area.grid_columnconfigure(0, weight=1)
+        main_area.grid_rowconfigure(1, weight=1)
+
+        info_card = ctk.CTkFrame(main_area, corner_radius=12, fg_color="#161f30")
+        info_card.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        info_card.grid_columnconfigure((0, 1, 2), weight=1)
+
+        self.info_labels = {}
+        cards = [
+            ("model", "الجهاز / الشركة", "غير متصل"),
+            ("android", "نظام التشغيل والبناء", "—"),
+            ("battery", "البطارية والمعالج", "—"),
+            ("mode", "وضع الاتصال", "لا يوجد"),
+            ("serial", "الرقم التسلسلي", "—"),
+            ("ports", "منافذ COM", "لا يوجد"),
+        ]
+
+        for idx, (key, title, default) in enumerate(cards):
+            cell = ctk.CTkFrame(info_card, fg_color="#1d283d", corner_radius=8)
+            cell.grid(row=idx // 3, column=idx % 3, padx=8, pady=8, sticky="ew")
+            ctk.CTkLabel(
+                cell, text=title, font=ctk.CTkFont(size=11), text_color="#94a3b8"
+            ).pack(anchor="w", padx=10, pady=(6, 0))
+            lbl = ctk.CTkLabel(
+                cell, text=default, font=ctk.CTkFont(size=13, weight="bold"), text_color="#f8fafc"
+            )
+            lbl.pack(anchor="w", padx=10, pady=(2, 8))
+            self.info_labels[key] = lbl
+
+        self.tabs = ctk.CTkTabview(main_area, corner_radius=12, fg_color="#161f30")
+        self.tabs.grid(row=1, column=0, sticky="nsew")
+
+        tab_overview = self.tabs.add("📋 التشخيص والسجل")
+        tab_brands = self.tabs.add("📱 الأجهزة والشركات")
+        tab_apps = self.tabs.add("📦 إدارة التطبيقات")
+        tab_flash = self.tabs.add("⚡ تفليش Fastboot")
+        tab_net = self.tabs.add("📡 الشبكة والتشخيص")
+
+        self._build_overview_tab(tab_overview)
+        self._build_brands_tab(tab_brands)
+        self._build_apps_tab(tab_apps)
+        self._build_flash_tab(tab_flash)
+        self._build_net_tab(tab_net)
+
+    def _build_context_menus(self):
+        self.console_menu = ctk.CTkFrame(
+            self, fg_color="#1e293b", corner_radius=8, border_width=1, border_color="#38bdf8"
+        )
+        self.console_menu.place_forget()
+
+        ctk.CTkButton(
+            self.console_menu, text="📋 نسخ السجل بالكامل", height=30, anchor="w",
+            fg_color="transparent", hover_color="#334155", command=self._copy_console_and_close
+        ).pack(fill="x", padx=4, pady=2)
+
+        ctk.CTkButton(
+            self.console_menu, text="📄 تصدير تقرير TXT", height=30, anchor="w",
+            fg_color="transparent", hover_color="#334155", command=self._export_and_close
+        ).pack(fill="x", padx=4, pady=2)
+
+        ctk.CTkButton(
+            self.console_menu, text="🧹 مسح السجل", height=30, anchor="w",
+            fg_color="transparent", hover_color="#334155", command=self._clear_and_close
+        ).pack(fill="x", padx=4, pady=2)
+
+        self.console._textbox.bind("<Button-3>", self._show_console_menu)
+        self.bind("<Button-1>", lambda e: self.console_menu.place_forget(), add="+")
+
+    def _show_console_menu(self, event):
+        x = min(event.x_root - self.winfo_rootx(), self.winfo_width() - 190)
+        y = min(event.y_root - self.winfo_rooty(), self.winfo_height() - 120)
+        self.console_menu.place(x=max(10, x), y=max(10, y))
+        return "break"
+
+    def _copy_console_and_close(self):
+        self.console_menu.place_forget()
+        content = self.console.get("1.0", "end").strip()
+        if content:
+            self.clipboard_clear()
+            self.clipboard_append(content)
+            self.log("تم نسخ سجل العمليات إلى الحافظة.", "SUCCESS")
+
+    def _export_and_close(self):
+        self.console_menu.place_forget()
+        self.export_report()
+
+    def _clear_and_close(self):
+        self.console_menu.place_forget()
+        self.clear_log()
+
+    def _build_overview_tab(self, parent):
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+
+        toolbar = ctk.CTkFrame(parent, fg_color="transparent")
+        toolbar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 4))
+
+        ctk.CTkButton(
+            toolbar,
+            text="🔍 قراءة معلومات الجهاز",
+            fg_color="#059669",
+            hover_color="#047857",
+            command=self.read_device_info,
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            toolbar,
+            text="🐞 سحب Logcat",
+            fg_color="#7c3aed",
+            hover_color="#6d28d9",
+            command=self.dump_logcat,
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            toolbar,
+            text="🧹 مسح السجل",
+            fg_color="#334155",
+            hover_color="#475569",
+            command=self.clear_log,
+        ).pack(side="right")
+
+        self.console = ctk.CTkTextbox(
+            parent,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            fg_color="#0b0f19",
+            text_color="#e2e8f0",
+            corner_radius=8,
+        )
+        self.console.grid(row=1, column=0, padx=8, pady=(4, 8), sticky="nsew")
+        self.console.configure(state="disabled")
+
+    def _build_brands_tab(self, parent):
+        parent.grid_columnconfigure(1, weight=1)
+        parent.grid_rowconfigure(0, weight=1)
+
+        brand_list_frame = ctk.CTkScrollableFrame(parent, width=280, fg_color="#111827", corner_radius=10)
+        brand_list_frame.grid(row=0, column=0, padx=(8, 6), pady=8, sticky="nsew")
+
+        self.brand_buttons = {}
+        for brand_name in BRAND_PROFILES.keys():
+            btn = ctk.CTkButton(
+                brand_list_frame,
+                text=brand_name,
+                height=38,
+                anchor="w",
+                fg_color="#1e293b",
+                hover_color="#334155",
+                command=lambda b=brand_name: self.select_brand(b),
+            )
+            btn.pack(fill="x", padx=6, pady=4)
+            self.brand_buttons[brand_name] = btn
+
+        self.brand_detail_panel = ctk.CTkFrame(parent, fg_color="#111827", corner_radius=10)
+        self.brand_detail_panel.grid(row=0, column=1, padx=(6, 8), pady=8, sticky="nsew")
+        self.brand_detail_panel.grid_columnconfigure(0, weight=1)
+
+        self.brand_title_lbl = ctk.CTkLabel(
+            self.brand_detail_panel,
+            text="",
+            font=ctk.CTkFont(size=17, weight="bold"),
+            text_color="#38bdf8",
+        )
+        self.brand_title_lbl.grid(row=0, column=0, padx=18, pady=(18, 6), sticky="w")
+
+        self.brand_note_lbl = ctk.CTkLabel(
+            self.brand_detail_panel,
+            text="",
+            font=ctk.CTkFont(size=13),
+            text_color="#cbd5e1",
+            wraplength=540,
+            justify="left",
+        )
+        self.brand_note_lbl.grid(row=1, column=0, padx=18, pady=(0, 14), sticky="w")
+
+        self.brand_actions_frame = ctk.CTkFrame(self.brand_detail_panel, fg_color="transparent")
+        self.brand_actions_frame.grid(row=2, column=0, padx=18, pady=8, sticky="ew")
+
+        self.select_brand(self.current_brand)
+
+    def select_brand(self, brand_name):
+        self.current_brand = brand_name
+        for b_name, btn in self.brand_buttons.items():
+            btn.configure(fg_color="#0284c7" if b_name == brand_name else "#1e293b")
+
+        profile = BRAND_PROFILES[brand_name]
+        self.brand_title_lbl.configure(text=brand_name)
+        self.brand_note_lbl.configure(text=profile["notes"])
+
+        if self.demo_mode:
+            self.status_badge.configure(text="● Demo Device Active", text_color="#a78bfa")
+            self.info_labels["model"].configure(text=profile["demo_model"])
+            self.info_labels["android"].configure(text=profile["demo_os"])
+            self.info_labels["battery"].configure(text=profile["demo_spec"])
+            self.info_labels["mode"].configure(text=profile["demo_mode"])
+            self.info_labels["serial"].configure(text=profile["demo_serial"])
+
+        for child in self.brand_actions_frame.winfo_children():
+            child.destroy()
+
+        for act_label, act_type, act_args in profile["actions"]:
+            if act_type == "info":
+                cmd = self.read_device_info
+            elif act_type == "refresh":
+                cmd = self.refresh_connections
+            else:
+                cmd = lambda p=act_type, a=act_args, l=act_label: self.run_action(p, a, l)
+
+            ctk.CTkButton(
+                self.brand_actions_frame,
+                text=act_label,
+                height=38,
+                fg_color="#2563eb",
+                hover_color="#1d4ed8",
+                command=cmd,
+            ).pack(side="left", padx=(0, 8), pady=4)
+
+        self.log(f"تم اختيار قسم الشركة: {brand_name}", "INFO")
+
+    def _build_apps_tab(self, parent):
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+
+        top = ctk.CTkFrame(parent, fg_color="transparent")
+        top.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
+
+        ctk.CTkButton(
+            top,
+            text="📲 تثبيت ملف APK",
+            fg_color="#2563eb",
+            hover_color="#1d4ed8",
+            command=self.install_apk,
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            top,
+            text="📋 عرض حزم التطبيقات",
+            fg_color="#0d9488",
+            hover_color="#0f766e",
+            command=self.list_packages,
+        ).pack(side="left", padx=(0, 8))
+
+        self.pkg_entry = ctk.CTkEntry(
+            top, placeholder_text="اسم الحزمة مثل: com.example.app", width=250
+        )
+        self.pkg_entry.pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            top,
+            text="🗑️ إزالة الحزمة",
+            fg_color="#dc2626",
+            hover_color="#b91c1c",
+            command=self.uninstall_package,
+        ).pack(side="left")
+
+        self.pkg_box = ctk.CTkTextbox(
+            parent,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            fg_color="#0b0f19",
+            text_color="#cbd5e1",
+            corner_radius=8,
+        )
+        self.pkg_box.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="nsew")
+
+    def _build_flash_tab(self, parent):
+        parent.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            parent,
+            text="قسم التفليش (Partition):",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).grid(row=0, column=0, padx=14, pady=(20, 10), sticky="w")
+
+        self.partition_menu = ctk.CTkOptionMenu(
+            parent,
+            values=["boot", "recovery", "system", "vendor", "vbmeta", "dtbo", "userdata"],
+            width=230,
+        )
+        self.partition_menu.grid(row=0, column=1, padx=14, pady=(20, 10), sticky="w")
+
+        ctk.CTkLabel(
+            parent,
+            text="ملف الصورة (.img):",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).grid(row=1, column=0, padx=14, pady=10, sticky="w")
+
+        file_row = ctk.CTkFrame(parent, fg_color="transparent")
+        file_row.grid(row=1, column=1, padx=14, pady=10, sticky="ew")
+
+        self.img_path_lbl = ctk.CTkLabel(
+            file_row, text="لم يتم اختيار ملف بعد", text_color="#94a3b8"
+        )
+        self.img_path_lbl.pack(side="left", padx=(0, 12))
+
+        ctk.CTkButton(
+            file_row,
+            text="📂 اختيار ملف IMG",
+            fg_color="#334155",
+            hover_color="#475569",
+            command=self.choose_img_file,
+        ).pack(side="left")
+
+        btn_row = ctk.CTkFrame(parent, fg_color="transparent")
+        btn_row.grid(row=2, column=1, padx=14, pady=22, sticky="w")
+
+        ctk.CTkButton(
+            btn_row,
+            text="⚡ تفليش القسم (Flash)",
+            height=40,
+            width=190,
+            fg_color="#ea580c",
+            hover_color="#c2410c",
+            command=self.flash_partition,
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            btn_row,
+            text="🧹 مسح القسم (Erase)",
+            height=40,
+            width=170,
+            fg_color="#b91c1c",
+            hover_color="#991b1b",
+            command=self.erase_partition,
+        ).pack(side="left")
+
+    def _build_net_tab(self, parent):
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+
+        top = ctk.CTkFrame(parent, fg_color="transparent")
+        top.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
+
+        ctk.CTkButton(
+            top,
+            text="📡 فحص الشبكة وحالة الأدوات",
+            fg_color="#0284c7",
+            hover_color="#0369a1",
+            command=self.run_diagnostics,
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            top,
+            text="🔐 فحص حالة الحماية (قراءة فقط)",
+            fg_color="#7c3aed",
+            hover_color="#6d28d9",
+            command=self.check_frp_status_readonly,
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            top,
+            text="🌐 استعادة Google",
+            fg_color="#334155",
+            hover_color="#475569",
+            command=lambda: self.open_official_recovery("google"),
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            top,
+            text="🌐 استعادة Xiaomi",
+            fg_color="#334155",
+            hover_color="#475569",
+            command=lambda: self.open_official_recovery("xiaomi"),
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            top,
+            text="📄 حفظ تقرير TXT",
+            fg_color="#059669",
+            hover_color="#047857",
+            command=self.export_report,
+        ).pack(side="left")
+
+        self.diag_box = ctk.CTkTextbox(
+            parent,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            fg_color="#0b0f19",
+            text_color="#a7f3d0",
+            corner_radius=8,
+        )
+        self.diag_box.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="nsew")
+
+    def open_official_recovery(self, service_name):
+        urls = {
+            "google": "https://accounts.google.com/signin/recovery",
+            "xiaomi": "https://account.xiaomi.com/pass/serviceLogin",
+        }
+        url = urls.get(service_name)
+        if url:
+            webbrowser.open(url)
+            self.log(f"تم فتح صفحة الاستعادة الرسمية لـ ({service_name}) في المتصفح.", "INFO")
+
+    def check_frp_status_readonly(self):
+        if self.demo_mode:
+            self.log("[محاكاة] فحص حالة الحماية (قراءة فقط): FRP Status = Read-Only Check Complete.", "WARN")
+            return
+
+        def _task():
+            self.log("جاري فحص حالة الحماية (قراءة فقط)...", "INFO")
+            code, out, err = self._exec([self.adb_path, "shell", "getprop", "ro.frp.pst"])
+            if code == 0:
+                status = out if out else "غير محدد / غير متاح في الخاصية"
+                self.log(f"نتيجة فحص ro.frp.pst: {status}", "INFO")
+            else:
+                self.log(f"تعذر الفحص: {err}", "ERROR")
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def run_diagnostics(self):
+        def _task():
+            adb_ok = os.path.exists(self.adb_path) or self._exec([self.adb_path, "version"])[0] == 0
+            fb_ok = os.path.exists(self.fastboot_path) or self._exec([self.fastboot_path, "--version"])[0] == 0
+            ports = list(serial.tools.list_ports.comports())
+            ports_lines = "\n".join([f"  - {p.device}: {p.description}" for p in ports]) if ports else "  - لا توجد منافذ COM متصلة"
+
+            if self.demo_mode:
+                report = (
+                    "=== تقرير التشخيص والشبكة (وضع التجربة) ===\n"
+                    f"الجهاز: {BRAND_PROFILES[self.current_brand]['demo_model']}\n"
+                    "حالة الشبكة: متصلة (Wi-Fi 6 / LTE Active)\n"
+                    "الـ Baseband: G998BXXU9EXB1 (تشخيصي)\n"
+                    "صحة البطارية: Good (88%)\n"
+                    f"أداة ADB: {'متوفرة' if adb_ok else 'غير مثبتة'}\n"
+                    f"أداة Fastboot: {'متوفرة' if fb_ok else 'غير مثبتة'}\n"
+                    f"منافذ COM:\n{ports_lines}\n"
+                )
+            else:
+                code, net_out, _ = self._exec([self.adb_path, "shell", "getprop", "gsm.version.baseband"])
+                bb = net_out if code == 0 and net_out else "غير متاح أو الجهاز غير متصل"
+                report = (
+                    "=== تقرير التشخيص والشبكة (النظام) ===\n"
+                    f"أداة ADB: {'متوفرة' if adb_ok else 'غير موجودة - ضع platform-tools بجانب الأداة'}\n"
+                    f"أداة Fastboot: {'متوفرة' if fb_ok else 'غير موجودة - ضع platform-tools بجانب الأداة'}\n"
+                    f"الـ Baseband (تشخيصي): {bb}\n"
+                    f"منافذ COM:\n{ports_lines}\n"
+                )
+
+            self.after(0, lambda: (self.diag_box.delete("1.0", "end"), self.diag_box.insert("end", report)))
+            self.log("تم تحديث تقرير التشخيص والشبكة.", "SUCCESS")
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def export_report(self):
+        save = filedialog.asksaveasfilename(
+            title="حفظ تقرير التشخيص",
+            defaultextension=".txt",
+            initialfile=f"prodroid_report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+        )
+        if not save:
+            return
+
+        content = (
+            f"ProDroid Service Tool v1.3 Report\n"
+            f"Time: {datetime.datetime.now()}\n"
+            f"Model: {self.info_labels['model'].cget('text')}\n"
+            f"OS: {self.info_labels['android'].cget('text')}\n"
+            f"Battery/CPU: {self.info_labels['battery'].cget('text')}\n"
+            f"Mode: {self.info_labels['mode'].cget('text')}\n"
+            f"Serial: {self.info_labels['serial'].cget('text')}\n"
+            f"COM Ports: {self.info_labels['ports'].cget('text')}\n"
+            f"\n--- Diagnostics ---\n{self.diag_box.get('1.0', 'end').strip()}\n"
+            f"\n--- Operation Log ---\n{self.console.get('1.0', 'end').strip()}\n"
+        )
+        with open(save, "w", encoding="utf-8") as f:
+            f.write(content)
+        self.log(f"تم تصدير التقرير بنجاح إلى: {save}", "SUCCESS")
+
+    def log(self, msg, level="INFO"):
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        icon = {"INFO": "ℹ️", "SUCCESS": "✅", "WARN": "⚠️", "ERROR": "❌"}.get(level, "•")
+
+        def _write():
+            self.console.configure(state="normal")
+            self.console.insert("end", f"[{ts}] {icon} {msg}\n")
+            self.console.see("end")
+            self.console.configure(state="disabled")
+
+        self.after(0, _write)
+
+    def clear_log(self):
+        self.console.configure(state="normal")
+        self.console.delete("1.0", "end")
+        self.console.configure(state="disabled")
+
+    def set_progress(self, value_0_to_1, text=None):
+        def _upd():
+            val = max(0.0, min(1.0, value_0_to_1))
+            self.progress_bar.set(val)
+            self.progress_lbl.configure(text=text or f"جاري التنفيذ ({int(val * 100)}%)")
+
+        self.after(0, _upd)
+
+    def toggle_demo_mode(self):
+        self.demo_mode = not self.demo_mode
+        if self.demo_mode:
+            self.demo_btn.configure(text="🧪 وضع التجربة: مفعّل", fg_color="#7c3aed", hover_color="#6d28d9")
+            self.log("تم تفعيل وضع التجربة. يمكنك التنقل بين كافة الأقسام والتبويبات الآن.", "WARN")
+            self.select_brand(self.current_brand)
+            self.run_diagnostics()
+        else:
+            self.demo_btn.configure(text="🧪 وضع التجربة: متوقف", fg_color="#374151", hover_color="#4b5563")
+            self.log("تم إيقاف وضع التجربة. جاري فحص الأجهزة الحقيقية...", "INFO")
+            self.refresh_connections()
+
+    def _exec(self, cmd_list, timeout=20):
+        try:
+            startupinfo = None
+            if os.name == "nt":
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+            res = subprocess.run(
+                cmd_list,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                startupinfo=startupinfo,
+                encoding="utf-8",
+                errors="replace",
+            )
+            return res.returncode, res.stdout.strip(), res.stderr.strip()
+        except FileNotFoundError:
+            return -1, "", f"الملف غير موجود: {cmd_list[0]} (ضع platform-tools بجانب الأداة)"
+        except subprocess.TimeoutExpired:
+            return -2, "", "انتهت مهلة تنفيذ الأمر."
+        except Exception as e:
+            return -3, "", str(e)
+
+    def refresh_connections(self):
+        if self.demo_mode:
+            self.select_brand(self.current_brand)
+            return
+
+        def _task():
+            ports = list(serial.tools.list_ports.comports())
+            p_str = ", ".join([p.device for p in ports]) if ports else "لا يوجد"
+            self.after(0, lambda: self.info_labels["ports"].configure(text=p_str))
+
+            code, out, err = self._exec([self.adb_path, "devices"])
+            if code == -1:
+                self.log(err, "ERROR")
+                return
+
+            devs = [l for l in out.splitlines()[1:] if l.strip()]
+            if devs:
+                parts = devs[0].split()
+                serial_id = parts[0]
+                state = parts[1] if len(parts) > 1 else "unknown"
+                if state == "device":
+                    self.after(0, lambda: self._set_state("ADB Mode", serial_id, "#10b981"))
+                    self.log(f"متصل عبر ADB: {serial_id}", "SUCCESS")
+                    self.read_device_info()
+                    return
+                elif state == "unauthorized":
+                    self.after(0, lambda: self._set_state("بانتظار السماح", serial_id, "#f59e0b"))
+                    self.log("يرجى الموافقة على تصحيح أخطاء USB على شاشة الهاتف.", "WARN")
+                    return
+
+            f_code, f_out, _ = self._exec([self.fastboot_path, "devices"])
+            if f_code == 0 and f_out:
+                serial_id = f_out.split()[0]
+                self.after(0, lambda: self._set_state("Fastboot Mode", serial_id, "#38bdf8"))
+                self.log(f"متصل عبر Fastboot: {serial_id}", "SUCCESS")
+                return
+
+            self.after(0, lambda: self._set_state("في انتظار الجهاز", "—", "#fbbf24"))
+            self.log("لا يوجد جهاز متصل حالياً. يمكنك تفعيل (وضع التجربة) للاختبار.", "INFO")
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _set_state(self, mode, serial_id, color):
+        self.status_badge.configure(text=f"● {mode}", text_color=color)
+        self.info_labels["mode"].configure(text=mode)
+        self.info_labels["serial"].configure(text=serial_id)
+
+    def read_device_info(self):
+        if self.demo_mode:
+            self.select_brand(self.current_brand)
+            self.log(f"قراءة معلومات الجهاز الافتراضي مكتملة ({BRAND_PROFILES[self.current_brand]['demo_model']}).", "SUCCESS")
+            return
+
+        def _task():
+            self.log("جاري قراءة معلومات الجهاز...", "INFO")
+            props = {
+                "brand": "ro.product.brand",
+                "model": "ro.product.model",
+                "rel": "ro.build.version.release",
+                "sdk": "ro.build.version.sdk",
+                "abi": "ro.product.cpu.abi",
+            }
+            info = {}
+            for k, p in props.items():
+                code, out, err = self._exec([self.adb_path, "shell", "getprop", p])
+                if code != 0:
+                    self.log(f"تعذر قراءة المعلومات: {err or 'تحقق من اتصال ADB'}", "ERROR")
+                    return
+                info[k] = out or "—"
+
+            _, bat, _ = self._exec([self.adb_path, "shell", "dumpsys", "battery"])
+            level = "—"
+            for line in bat.splitlines():
+                if "level:" in line:
+                    level = line.split(":")[1].strip() + "%"
+                    break
+
+            self.after(0, lambda: self.info_labels["model"].configure(text=f"{info['brand'].upper()} {info['model']}"))
+            self.after(0, lambda: self.info_labels["android"].configure(text=f"Android {info['rel']} (SDK {info['sdk']})"))
+            self.after(0, lambda: self.info_labels["battery"].configure(text=f"{level}  |  {info['abi']}"))
+            self.log("تم تحديث معلومات الجهاز بنجاح.", "SUCCESS")
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def run_action(self, proto, args, label):
+        def _task():
+            self.log(f"بدء العملية: {label}...", "INFO")
+            self.set_progress(0.35, "جاري التنفيذ...")
+            if self.demo_mode:
+                time.sleep(0.6)
+                self.set_progress(1.0, "مكتمل (محاكاة)")
+                self.log(f"[محاكاة] تم تنفيذ ({label}) بنجاح.", "SUCCESS")
+                time.sleep(0.5)
+                self.set_progress(0.0, "جاهز (0%)")
+                return
+
+            exe = self.adb_path if proto == "adb" else self.fastboot_path
+            code, out, err = self._exec([exe] + args)
+            self.set_progress(1.0 if code == 0 else 0.0, "مكتمل" if code == 0 else "فشل")
+            if code == 0:
+                self.log(f"نجاح: {label} {out}", "SUCCESS")
+            else:
+                self.log(f"فشل ({label}): {err}", "ERROR")
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def install_apk(self):
+        path = filedialog.askopenfilename(title="اختر ملف APK", filetypes=[("APK Files", "*.apk")])
+        if not path:
+            return
+
+        def _task():
+            self.log(f"جاري تثبيت: {os.path.basename(path)}", "INFO")
+            self.set_progress(0.4, "جاري التثبيت...")
+            if self.demo_mode:
+                time.sleep(0.7)
+                self.set_progress(1.0, "تم التثبيت (محاكاة)")
+                self.log(f"[محاكاة] تم تثبيت {os.path.basename(path)} بنجاح.", "SUCCESS")
+                return
+
+            code, out, err = self._exec([self.adb_path, "install", "-r", path], timeout=60)
+            self.set_progress(1.0 if code == 0 else 0.0, "مكتمل" if code == 0 else "فشل")
+            if code == 0 and "Success" in out:
+                self.log("تم تثبيت التطبيق بنجاح.", "SUCCESS")
+            else:
+                self.log(f"فشل التثبيت: {err or out}", "ERROR")
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def list_packages(self):
+        def _task():
+            self.log("جاري جلب قائمة الحزم...", "INFO")
+            if self.demo_mode:
+                sample = (
+                    "package:com.android.settings\n"
+                    "package:com.android.chrome\n"
+                    "package:com.sec.android.app.camera\n"
+                    "package:com.transsion.xOSLauncher\n"
+                    "package:com.miui.home\n"
+                )
+                self.after(0, lambda: (self.pkg_box.delete("1.0", "end"), self.pkg_box.insert("end", sample)))
+                self.log("[محاكاة] تم عرض قائمة تطبيقات نموذجية.", "SUCCESS")
+                return
+
+            code, out, err = self._exec([self.adb_path, "shell", "pm", "list", "packages"])
+            if code == 0:
+                self.after(0, lambda: (self.pkg_box.delete("1.0", "end"), self.pkg_box.insert("end", out)))
+                self.log("تم جلب قائمة التطبيقات بنجاح.", "SUCCESS")
+            else:
+                self.log(f"تعذر جلب التطبيقات: {err}", "ERROR")
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def uninstall_package(self):
+        pkg = self.pkg_entry.get().strip()
+        if not pkg:
+            messagebox.showwarning("تنبيه", "أدخل اسم الحزمة أولاً.")
+            return
+
+        def _task():
+            self.log(f"جاري إزالة الحزمة: {pkg}", "INFO")
+            if self.demo_mode:
+                time.sleep(0.5)
+                self.log(f"[محاكاة] تم إزالة الحزمة {pkg}.", "SUCCESS")
+                return
+
+            code, out, err = self._exec([self.adb_path, "uninstall", pkg])
+            if code == 0 and "Success" in out:
+                self.log(f"تمت إزالة {pkg} بنجاح.", "SUCCESS")
+            else:
+                self.log(f"فشلت الإزالة: {err or out}", "ERROR")
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def choose_img_file(self):
+        path = filedialog.askopenfilename(title="اختر ملف IMG", filetypes=[("IMG Files", "*.img"), ("All Files", "*.*")])
+        if path:
+            self.selected_img_path = path
+            self.img_path_lbl.configure(text=os.path.basename(path), text_color="#38bdf8")
+
+    def flash_partition(self):
+        part = self.partition_menu.get()
+        if not self.selected_img_path and not self.demo_mode:
+            messagebox.showwarning("تنبيه", "اختر ملف (.img) أولاً.")
+            return
+
+        confirm = messagebox.askyesno(
+            "تأكيد التفليش",
+            f"هل أنت متأكد من تفليش القسم ({part})؟ تأكد من توافق الملف مع الجهاز.",
+        )
+        if not confirm:
+            return
+
+        def _task():
+            self.log(f"بدء تفليش القسم [{part}]...", "WARN")
+            for p in [0.25, 0.6, 0.9]:
+                self.set_progress(p, f"تفليش {part}...")
+                time.sleep(0.35 if self.demo_mode else 0.1)
+
+            if self.demo_mode:
+                self.set_progress(1.0, "اكتمل التفليش (محاكاة)")
+                self.log(f"[محاكاة] تم تفليش القسم [{part}] بنجاح.", "SUCCESS")
+                return
+
+            code, out, err = self._exec([self.fastboot_path, "flash", part, self.selected_img_path], timeout=120)
+            if code == 0:
+                self.set_progress(1.0, "اكتمل التفليش")
+                self.log(f"تم تفليش [{part}] بنجاح! {out or err}", "SUCCESS")
+            else:
+                self.set_progress(0.0, "فشل التفليش")
+                self.log(f"فشل التفليش: {err}", "ERROR")
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def erase_partition(self):
+        part = self.partition_menu.get()
+        confirm = messagebox.askyesno(
+            "تأكيد المسح",
+            f"تحذير: هل أنت متأكد من مسح القسم ({part})؟ قد يؤدي ذلك لفقدان بيانات أو تعذر الإقلاع.",
+        )
+        if not confirm:
+            return
+
+        def _task():
+            self.log(f"بدء مسح القسم [{part}]...", "WARN")
+            self.set_progress(0.5, f"مسح {part}...")
+            if self.demo_mode:
+                time.sleep(0.5)
+                self.set_progress(1.0, "تم المسح (محاكاة)")
+                self.log(f"[محاكاة] تم مسح القسم [{part}].", "SUCCESS")
+                return
+
+            code, out, err = self._exec([self.fastboot_path, "erase", part], timeout=60)
+            self.set_progress(1.0 if code == 0 else 0.0, "مكتمل" if code == 0 else "فشل")
+            if code == 0:
+                self.log(f"تم مسح [{part}] بنجاح.", "SUCCESS")
+            else:
+                self.log(f"فشل المسح: {err}", "ERROR")
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def dump_logcat(self):
+        save = filedialog.asksaveasfilename(
+            title="حفظ Logcat",
+            defaultextension=".txt",
+            initialfile=f"logcat_{datetime.datetime.now().strftime('%H%M%S')}.txt",
+        )
+        if not save:
+            return
+
+        def _task():
+            if self.demo_mode:
+                with open(save, "w", encoding="utf-8") as f:
+                    f.write("DEMO LOGCAT DUMP\nI/ActivityManager: Displayed com.android.settings\n")
+                self.log(f"[محاكاة] تم حفظ سجل تجريبي في: {save}", "SUCCESS")
+                return
+
+            code, out, err = self._exec([self.adb_path, "logcat", "-d"], timeout=25)
+            if code == 0 and out:
+                with open(save, "w", encoding="utf-8") as f:
+                    f.write(out)
+                self.log(f"تم حفظ السجل في: {save}", "SUCCESS")
+            else:
+                self.log(f"فشل سحب السجل: {err}", "ERROR")
+
+        threading.Thread(target=_task, daemon=True).start()
+
+
+if __name__ == "__main__":
+    app = ProDroidServiceTool()
+    app.mainloop()
